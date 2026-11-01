@@ -29,7 +29,7 @@ export S3CACHE_S3=s3://my-bucket/ci
 export S3CACHE_KEY='linux-{{ hashFiles "Cargo.lock" }}'
 
 # restore before the build
-s3cache restore --restore-key linux- --path ~/.cargo/registry --path target
+s3cache restore --restore-key linux-
 
 # build, then save
 s3cache save --path ~/.cargo/registry --path target
@@ -39,7 +39,7 @@ Both commands print the resolved cache key on stdout and log progress on stderr,
 so stdout stays usable in `$(...)`:
 
 ```bash
-MATCHED=$(S3CACHE_S3=$S3 S3CACHE_KEY=$KEY s3cache restore --restore-key main- --path target)
+MATCHED=$(S3CACHE_S3=$S3 S3CACHE_KEY=$KEY s3cache restore --restore-key main-)
 ```
 
 `restore` exits 0 on a miss: a cache is an optimisation, so a cold run is not a
@@ -63,8 +63,9 @@ failure.
 | `S3CACHE_VERBOSE` | both | `true` to log lookup and archive details |
 | `S3CACHE_OVERWRITE` | save | `true` to replace an existing entry instead of keeping it |
 
-Flags, all repeatable: `--path` (file, directory or glob, `**` and `!pattern`
-supported) and, for `restore`, `--restore-key` (prefix fallback, tried in order).
+Flags, all repeatable: `save` takes `--path` (file, directory or glob, `**` and
+`!pattern` supported); `restore` takes `--restore-key` (prefix fallback, tried in
+order) and no paths at all.
 
 Booleans accept anything `strconv.ParseBool` understands (`true`, `1`, `TRUE`).
 A blank variable counts as unset, so an exported but empty `S3CACHE_KEY` is
@@ -75,8 +76,8 @@ Credentials are exactly `S3CACHE_ACCESS_KEY` / `S3CACHE_SECRET_KEY` (plus
 `S3CACHE_SESSION_TOKEN` for temporary ones). The AWS SDK chain —
 `AWS_ACCESS_KEY_ID`, profiles, container or instance roles — is not consulted, so
 what the process signs with is always visible in one place. For third-party
-storage also set `S3CACHE_ENDPOINT_URL` (and usually
-`S3CACHE_FORCE_PATH_STYLE=true`).
+storage also set `S3CACHE_ENDPOINT_URL`; path style addressing turns on with it,
+and `S3CACHE_FORCE_PATH_STYLE=false` opts back into virtual host style.
 
 ### Cache keys
 
@@ -93,7 +94,7 @@ verbatim, and the usual template actions (`if`, `printf`, pipelines, ...) work.
 ```bash
 # Rust: key from Cargo.lock
 S3CACHE_KEY='linux-{{ hashFiles "Cargo.lock" }}' \
-  s3cache restore --restore-key linux- --path ~/.cargo/registry --path target
+  s3cache restore --restore-key linux-
 
 # Node: branch name plus both lockfiles
 S3CACHE_KEY='{{ env "CI_COMMIT_REF_SLUG" }}-node-{{ hashFiles "package-lock.json" "pnpm-lock.yaml" }}' \
@@ -142,7 +143,7 @@ GitHub Actions:
 
 ```yaml
 - name: Restore cache
-  run: s3cache restore --restore-key linux- --path ~/.cargo/registry --path target
+  run: s3cache restore --restore-key linux-
   env:
     S3CACHE_S3: s3://my-bucket/ci
     S3CACHE_KEY: linux-${{ hashFiles('Cargo.lock') }}
@@ -170,7 +171,7 @@ cache-deps:
     S3CACHE_S3: s3://my-bucket/ci
     S3CACHE_KEY: 'linux-{{ env "CI_COMMIT_REF_SLUG" }}-{{ hashFiles "Cargo.lock" }}'
   script:
-    - s3cache restore --restore-key "linux-$CI_COMMIT_REF_SLUG-" --path target
+    - s3cache restore --restore-key "linux-$CI_COMMIT_REF_SLUG-"
     - cargo build --release
     - s3cache save --path target
 ```
