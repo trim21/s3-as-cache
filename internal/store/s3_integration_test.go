@@ -31,6 +31,11 @@ func integrationConfig(t *testing.T) S3Config {
 	}
 	cfg.Endpoint = endpoint
 	cfg.ForcePathStyle = true
+	cfg.AccessKey = os.Getenv("S3CACHE_TEST_ACCESS_KEY")
+	cfg.SecretKey = os.Getenv("S3CACHE_TEST_SECRET_KEY")
+	if cfg.AccessKey == "" || cfg.SecretKey == "" {
+		t.Skip("set S3CACHE_TEST_ACCESS_KEY and S3CACHE_TEST_SECRET_KEY to run the S3 integration tests")
+	}
 	return cfg
 }
 
@@ -38,7 +43,7 @@ func TestS3StoreIntegration(t *testing.T) {
 	cfg := integrationConfig(t)
 	ctx := context.Background()
 
-	st, err := NewS3(ctx, cfg)
+	st, err := NewS3(cfg)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

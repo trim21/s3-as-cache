@@ -86,27 +86,25 @@ jobs:
         env:
           S3CACHE_TEST_S3: s3://cache-integration/ci
           S3CACHE_TEST_ENDPOINT: http://127.0.0.1:9000
-          AWS_ACCESS_KEY_ID: ${{ env.SILO_USER }}
-          AWS_SECRET_ACCESS_KEY: ${{ env.SILO_PASSWORD }}
-          AWS_REGION: us-east-1
+          S3CACHE_TEST_ACCESS_KEY: ${{ env.SILO_USER }}
+          S3CACHE_TEST_SECRET_KEY: ${{ env.SILO_PASSWORD }}
         run: go test ./... -run Integration -v -count=1
 
       - name: CLI smoke test
         env:
-          S3CACHE_TEST_S3: s3://cache-integration/ci
-          S3CACHE_TEST_ENDPOINT: http://127.0.0.1:9000
-          AWS_ACCESS_KEY_ID: ${{ env.SILO_USER }}
-          AWS_SECRET_ACCESS_KEY: ${{ env.SILO_PASSWORD }}
-          AWS_REGION: us-east-1
+          S3CACHE_S3: s3://cache-integration/ci
+          S3CACHE_ENDPOINT_URL: http://127.0.0.1:9000
+          S3CACHE_KEY: smoke-${{ github.run_id }}
+          S3CACHE_ACCESS_KEY: ${{ env.SILO_USER }}
+          S3CACHE_SECRET_KEY: ${{ env.SILO_PASSWORD }}
         run: |
           go build -o /tmp/s3cache ./cmd/s3cache
           mkdir -p /tmp/smoke/deps
           echo hello > /tmp/smoke/deps/file.txt
 
-          common="--s3 s3://cache-integration/ci --endpoint-url $S3CACHE_TEST_ENDPOINT --force-path-style"
-          /tmp/s3cache save $common --key smoke-$GITHUB_RUN_ID --path /tmp/smoke
+          /tmp/s3cache save --path /tmp/smoke
           rm -rf /tmp/smoke
-          /tmp/s3cache restore $common --key smoke-$GITHUB_RUN_ID --path /tmp/smoke
+          /tmp/s3cache restore --path /tmp/smoke
           test "$(cat /tmp/smoke/deps/file.txt)" = hello
 
       - name: Silo logs

@@ -21,57 +21,66 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o s3cache ./cmd/s3cach
 
 ## Usage
 
-```bash
-# restore before the build
-s3cache restore --s3 s3://my-bucket/ci \
-  --key "linux-$(sha256sum Cargo.lock | cut -d' ' -f1)" \
-  --restore-key linux- \
-  --path ~/.cargo/registry --path target
+Every option except the path list comes from the environment, which keeps keys,
+templates and endpoints out of process arguments (and out of `ps`):
 
-# save after a miss
-s3cache save --s3 s3://my-bucket/ci \
-  --key "linux-$(sha256sum Cargo.lock | cut -d' ' -f1)" \
-  --path ~/.cargo/registry --path target
+```bash
+export S3CACHE_S3=s3://my-bucket/ci
+export S3CACHE_KEY='linux-{{ hashFiles "Cargo.lock" }}'
+
+# restore before the build
+s3cache restore --restore-key linux- --path ~/.cargo/registry --path target
+
+# build, then save
+s3cache save --path ~/.cargo/registry --path target
 ```
 
 Both commands print the resolved cache key on stdout and log progress on stderr,
 so stdout stays usable in `$(...)`:
 
 ```bash
-MATCHED=$(s3cache restore --s3 "$S3" --key "$KEY" --restore-key main- --path target)
+MATCHED=$(S3CACHE_S3=$S3 S3CACHE_KEY=$KEY s3cache restore --restore-key main- --path target)
 ```
 
-`restore` exits 0 on a miss (a cache is an optimisation), pass `--fail-on-miss`
-when the build depends on it. `--lookup-only` reports the matching key without
-downloading anything.
+`restore` exits 0 on a miss: a cache is an optimisation, so a cold run is not a
+failure.
 
-### Flags
+### Options
 
-| Flag | Commands | Meaning |
+| Variable | Commands | Meaning |
 | --- | --- | --- |
-| `--s3` | both | `s3://bucket/prefix` holding the cache (required) |
-| `--key` | both | exact cache key (required), templates allowed — see [Cache keys](#cache-keys) |
-| `--path` | both | file, directory or glob to cache; repeatable, supports `**` and `!pattern` excludes |
-| `--restore-key` | restore | fallback key matched by prefix, tried in order; repeatable |
-| `--lookup-only` | restore | only report the matching key |
-| `--fail-on-miss` | restore | exit 1 when nothing matches |
-| `--overwrite` | save | replace an existing entry instead of keeping it |
-| `--compression` | both | `zstd` (default), `gzip` or `none` |
-| `--cross-platform` | both | let archives match across OS and architecture |
-| `--region` | both | AWS region; defaults to the AWS SDK configuration |
-| `--endpoint-url` | both | S3-compatible endpoint instead of AWS |
-| `--force-path-style` | both | address the bucket path style instead of virtual host style |
-| `--quiet` | both | log errors only |
-| `--verbose` | both | log lookup and archive details |
+| `S3CACHE_S3` | both | `s3://bucket/prefix` holding the cache (required) |
+| `S3CACHE_KEY` | both | exact cache key (required), a template — see [Cache keys](#cache-keys) |
+| `S3CACHE_ACCESS_KEY` | both | S3 access key (required) |
+| `S3CACHE_SECRET_KEY` | both | S3 secret key (required) |
+| `S3CACHE_SESSION_TOKEN` | both | session token, for temporary credentials |
+| `S3CACHE_REGION` | both | AWS region, `us-east-1` when unset |
+| `S3CACHE_COMPRESSION` | both | `zstd` (default), `gzip` or `none` |
+| `S3CACHE_ENDPOINT_URL` | both | S3-compatible endpoint instead of AWS |
+| `S3CACHE_FORCE_PATH_STYLE` | both | address the bucket path style instead of virtual host style; defaults to `true` when `S3CACHE_ENDPOINT_URL` is set, set it to `false` to force virtual host style |
+| `S3CACHE_CROSS_PLATFORM` | both | `true` to let archives match across OS and architecture |
+| `S3CACHE_QUIET` | both | `true` to log errors only |
+| `S3CACHE_VERBOSE` | both | `true` to log lookup and archive details |
+| `S3CACHE_OVERWRITE` | save | `true` to replace an existing entry instead of keeping it |
 
-Credential resolution is the AWS SDK default chain: `AWS_ACCESS_KEY_ID` /
-`AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`, `AWS_PROFILE` and the shared
-config file, container credentials, or an instance profile. For third-party
-storage also set `--endpoint-url` (and usually `--force-path-style`).
+Flags, all repeatable: `--path` (file, directory or glob, `**` and `!pattern`
+supported) and, for `restore`, `--restore-key` (prefix fallback, tried in order).
+
+Booleans accept anything `strconv.ParseBool` understands (`true`, `1`, `TRUE`).
+A blank variable counts as unset, so an exported but empty `S3CACHE_KEY` is
+reported as a missing key rather than used as one. `s3cache --help` prints the
+same table.
+
+Credentials are exactly `S3CACHE_ACCESS_KEY` / `S3CACHE_SECRET_KEY` (plus
+`S3CACHE_SESSION_TOKEN` for temporary ones). The AWS SDK chain —
+`AWS_ACCESS_KEY_ID`, profiles, container or instance roles — is not consulted, so
+what the process signs with is always visible in one place. For third-party
+storage also set `S3CACHE_ENDPOINT_URL` (and usually
+`S3CACHE_FORCE_PATH_STYLE=true`).
 
 ### Cache keys
 
-`--key` and `--restore-key` are [Go text templates](https://pkg.go.dev/text/template),
+`S3CACHE_KEY` and `--restore-key` are [Go text templates](https://pkg.go.dev/text/template),
 so a key can be derived from the environment and from lockfile contents instead
 of being threaded through the CI YAML. A key without `{{ ... }}` actions is used
 verbatim, and the usual template actions (`if`, `printf`, pipelines, ...) work.
@@ -83,18 +92,16 @@ verbatim, and the usual template actions (`if`, `printf`, pipelines, ...) work.
 
 ```bash
 # Rust: key from Cargo.lock
-s3cache restore --s3 s3://b/ci --key 'linux-{{ hashFiles "Cargo.lock" }}' \
-  --restore-key linux- --path ~/.cargo/registry --path target
+S3CACHE_KEY='linux-{{ hashFiles "Cargo.lock" }}' \
+  s3cache restore --restore-key linux- --path ~/.cargo/registry --path target
 
 # Node: branch name plus both lockfiles
-s3cache save --s3 s3://b/ci \
-  --key '{{ env "CI_COMMIT_REF_SLUG" }}-node-{{ hashFiles "package-lock.json" "pnpm-lock.yaml" }}' \
-  --path node_modules
+S3CACHE_KEY='{{ env "CI_COMMIT_REF_SLUG" }}-node-{{ hashFiles "package-lock.json" "pnpm-lock.yaml" }}' \
+  s3cache save --path node_modules
 ```
 
 Expansion happens before the key is used, and the expanded key is what `save`
-prints on stdout, so the same template can be passed to a later `restore`. Quote
-templates in your shell so `{{ }}` reaches the binary untouched.
+prints on stdout, so the same template can be passed to a later `restore`.
 
 ## How it works
 
@@ -105,18 +112,18 @@ s3://bucket/<prefix>/<version>/<key>.tar.zst
 ```
 
 `<version>` is a hash of the normalized path list, the compression method and —
-unless `--cross-platform` is given — `GOOS-GOARCH`. It keeps caches for different
+unless `S3CACHE_CROSS_PLATFORM` is set — `GOOS-GOARCH`. It keeps caches for different
 path sets or platforms from matching each other, so adding or removing a `--path`
 starts a fresh cache instead of restoring a partially wrong one.
 
 A restore lists the `<version>/` prefix once and picks, in order:
 
-1. the object whose key is exactly `--key`,
+1. the object whose key is exactly `S3CACHE_KEY`,
 2. for each `--restore-key` in order, the most recently written object whose key
    starts with that prefix.
 
 `save` writes with a conditional create, so an existing key is kept and the
-upload is skipped (`--overwrite` forces a replacement). Nothing matched by
+upload is skipped (`S3CACHE_OVERWRITE=true` forces a replacement). Nothing matched by
 `--path` means nothing is uploaded, which mirrors "cache nothing" rather than
 storing an empty archive.
 
@@ -129,20 +136,25 @@ there. Extraction cleans every entry against the root and cannot escape it.
 GitHub Actions:
 
 ```yaml
-- uses: actions/checkout@v5
-- run: curl -fsSL https://example.com/s3cache-linux-amd64 -o /usr/local/bin/s3cache && chmod +x /usr/local/bin/s3cache
-  env: ...
 - name: Restore cache
-  run: s3cache restore --s3 "$S3_URL" --key "linux-${{ hashFiles('Cargo.lock') }}" --restore-key linux- --path target
+  run: s3cache restore --restore-key linux- --path ~/.cargo/registry --path target
   env:
-    S3_URL: s3://my-bucket/ci
-    AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-    AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-    AWS_REGION: us-east-1
+    S3CACHE_S3: s3://my-bucket/ci
+    S3CACHE_KEY: linux-${{ hashFiles('Cargo.lock') }}
+    S3CACHE_ACCESS_KEY: ${{ secrets.S3CACHE_ACCESS_KEY }}
+    S3CACHE_SECRET_KEY: ${{ secrets.S3CACHE_SECRET_KEY }}
+    S3CACHE_REGION: eu-west-1
+
 - run: cargo build --release
+
 - name: Save cache
-  run: s3cache save --s3 "$S3_URL" --key "linux-${{ hashFiles('Cargo.lock') }}" --path target
-  env: ...
+  run: s3cache save --path ~/.cargo/registry --path target
+  env:
+    S3CACHE_S3: s3://my-bucket/ci
+    S3CACHE_KEY: linux-${{ hashFiles('Cargo.lock') }}
+    S3CACHE_ACCESS_KEY: ${{ secrets.S3CACHE_ACCESS_KEY }}
+    S3CACHE_SECRET_KEY: ${{ secrets.S3CACHE_SECRET_KEY }}
+    S3CACHE_REGION: eu-west-1
 ```
 
 GitLab CI:
@@ -150,11 +162,12 @@ GitLab CI:
 ```yaml
 cache-deps:
   variables:
-    S3_URL: s3://my-bucket/ci
+    S3CACHE_S3: s3://my-bucket/ci
+    S3CACHE_KEY: 'linux-{{ env "CI_COMMIT_REF_SLUG" }}-{{ hashFiles "Cargo.lock" }}'
   script:
-    - s3cache restore --s3 "$S3_URL" --key "linux-$CI_COMMIT_REF_SLUG-$(sha256sum Cargo.lock | cut -d' ' -f1)" --restore-key "linux-$CI_COMMIT_REF_SLUG-" --path target
+    - s3cache restore --restore-key "linux-$CI_COMMIT_REF_SLUG-" --path target
     - cargo build --release
-    - s3cache save --s3 "$S3_URL" --key "linux-$CI_COMMIT_REF_SLUG-$(sha256sum Cargo.lock | cut -d' ' -f1)" --path target
+    - s3cache save --path target
 ```
 
 ## Development
@@ -177,7 +190,7 @@ docker exec silo mcli mb local/cache-integration
 
 S3CACHE_TEST_S3=s3://cache-integration/ci \
 S3CACHE_TEST_ENDPOINT=http://127.0.0.1:9000 \
-AWS_ACCESS_KEY_ID=s3cache AWS_SECRET_ACCESS_KEY=s3cache-secret AWS_REGION=us-east-1 \
+S3CACHE_TEST_ACCESS_KEY=s3cache S3CACHE_TEST_SECRET_KEY=s3cache-secret \
 go test ./... -run Integration -v
 ```
 

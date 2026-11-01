@@ -14,6 +14,11 @@ type S3Config struct {
 	Region         string
 	Endpoint       string
 	ForcePathStyle bool
+
+	// Credentials override the AWS default chain when both are set.
+	AccessKey    string
+	SecretKey    string
+	SessionToken string
 }
 
 // ParseURL turns s3://bucket/prefix into an S3Config.

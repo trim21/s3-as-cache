@@ -3,11 +3,10 @@ package store
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -18,6 +17,10 @@ import (
 // above it go through the multipart uploader.
 const maxSinglePut = 5 << 30
 
+// defaultRegion is used when no region is configured, which is what
+// S3-compatible services expect.
+const defaultRegion = "us-east-1"
+
 // S3 stores archives in a bucket, addressed as path style when a custom
 // endpoint is configured.
 type S3 struct {
@@ -26,16 +29,20 @@ type S3 struct {
 	uploader *manager.Uploader
 }
 
-func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
-	region := cfg.Region
-	if region == "" && cfg.Endpoint != "" {
-		// S3-compatible services accept any region but the SDK still requires one.
-		region = "us-east-1"
+func NewS3(cfg S3Config) (*S3, error) {
+	if cfg.AccessKey == "" || cfg.SecretKey == "" {
+		return nil, errors.New("s3 access key and secret key are required")
 	}
 
-	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
-	if err != nil {
-		return nil, fmt.Errorf("load aws config: %w", err)
+	region := cfg.Region
+	if region == "" {
+		// S3-compatible services accept any region but signing still needs one.
+		region = defaultRegion
+	}
+
+	awsCfg := aws.Config{
+		Region:      region,
+		Credentials: credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, cfg.SessionToken),
 	}
 
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
