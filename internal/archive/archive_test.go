@@ -8,9 +8,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var allCompressions = []Compression{CompressionZstd, CompressionGzip, CompressionNone}
+
+func testManifest(paths ...string) Manifest {
+	return Manifest{
+		Paths:     paths,
+		Platform:  "linux-amd64",
+		CreatedAt: time.Now().UTC(),
+	}
+}
 
 // extractedPath maps an archived absolute path to where it lands under root.
 func extractedPath(root, src string) string {
@@ -41,7 +50,7 @@ func TestCreateExtractRoundTrip(t *testing.T) {
 			}
 
 			var buf bytes.Buffer
-			stats, err := Create(&buf, []string{src}, compression)
+			stats, err := Create(&buf, []string{src}, compression, testManifest(src))
 			if err != nil {
 				t.Fatalf("create: %v", err)
 			}
@@ -50,9 +59,18 @@ func TestCreateExtractRoundTrip(t *testing.T) {
 			}
 
 			root := t.TempDir()
-			extracted, err := Extract(&buf, compression, root)
+			extracted, manifest, err := Extract(&buf, compression, root)
 			if err != nil {
 				t.Fatalf("extract: %v", err)
+			}
+			if len(manifest.Paths) != 1 || manifest.Paths[0] != src {
+				t.Fatalf("manifest paths = %q, want %q", manifest.Paths, src)
+			}
+			if manifest.Compression != string(compression) {
+				t.Fatalf("manifest compression = %q", manifest.Compression)
+			}
+			if _, err := os.Stat(extractedPath(root, "/"+manifestName)); err == nil {
+				t.Fatal("the manifest must not be extracted onto the filesystem")
 			}
 			if extracted.Files != stats.Files || extracted.Bytes != stats.Bytes {
 				t.Fatalf("extracted %+v, want %+v", extracted, stats)
@@ -94,7 +112,7 @@ func TestCreateHonoursExcludes(t *testing.T) {
 	writeTestFile(t, filepath.Join(src, "skip", "nested", "drop.txt"), "drop", 0o644)
 
 	var buf bytes.Buffer
-	stats, err := Create(&buf, []string{src, "!" + filepath.Join(src, "skip")}, CompressionNone)
+	stats, err := Create(&buf, []string{src, "!" + filepath.Join(src, "skip")}, CompressionNone, testManifest(src))
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -110,7 +128,7 @@ func TestCreateExpandsGlobs(t *testing.T) {
 	writeTestFile(t, filepath.Join(src, "nested", "c.log"), "c", 0o644)
 
 	var buf bytes.Buffer
-	stats, err := Create(&buf, []string{filepath.Join(src, "**", "*.txt")}, CompressionNone)
+	stats, err := Create(&buf, []string{filepath.Join(src, "**", "*.txt")}, CompressionNone, testManifest(src))
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -124,7 +142,7 @@ func TestCreateDedupesNestedPaths(t *testing.T) {
 	writeTestFile(t, filepath.Join(src, "nested", "a.txt"), "a", 0o644)
 
 	var buf bytes.Buffer
-	stats, err := Create(&buf, []string{src, filepath.Join(src, "nested")}, CompressionNone)
+	stats, err := Create(&buf, []string{src, filepath.Join(src, "nested")}, CompressionNone, testManifest(src))
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -141,7 +159,7 @@ func TestCreateWithoutMatchesReportsNoFiles(t *testing.T) {
 	for name, patterns := range tests {
 		t.Run(name, func(t *testing.T) {
 			var buf bytes.Buffer
-			if _, err := Create(&buf, patterns, CompressionNone); !errors.Is(err, ErrNoFiles) {
+			if _, err := Create(&buf, patterns, CompressionNone, testManifest(patterns...)); !errors.Is(err, ErrNoFiles) {
 				t.Fatalf("err = %v, want ErrNoFiles", err)
 			}
 		})
@@ -151,6 +169,9 @@ func TestCreateWithoutMatchesReportsNoFiles(t *testing.T) {
 func TestExtractKeepsPathsInsideRoot(t *testing.T) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
+	if err := writeManifest(tw, testManifest("/tmp/escape.txt")); err != nil {
+		t.Fatal(err)
+	}
 	body := []byte("escaped")
 	if err := tw.WriteHeader(&tar.Header{
 		Name:     "../escape.txt",
@@ -168,7 +189,7 @@ func TestExtractKeepsPathsInsideRoot(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	if _, err := Extract(&buf, CompressionNone, root); err != nil {
+	if _, _, err := Extract(&buf, CompressionNone, root); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
 
@@ -205,4 +226,73 @@ func TestNormalizePatterns(t *testing.T) {
 			t.Fatalf("got %q, want %q", got, want)
 		}
 	}
+}
+
+func TestManifestDoesNotCollideWithCachedFiles(t *testing.T) {
+	src := t.TempDir()
+	nested := filepath.Join(src, "nested", ".s3cache.json")
+	writeTestFile(t, nested, `{"note":"a real cached file"}`, 0o644)
+
+	var buf bytes.Buffer
+	if _, err := Create(&buf, []string{src}, CompressionNone, testManifest(src)); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	root := t.TempDir()
+	stats, manifest, err := Extract(&buf, CompressionNone, root)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if stats.Files != 1 {
+		t.Fatalf("extracted %d file(s), want the cached .s3cache.json to be treated as data", stats.Files)
+	}
+	if len(manifest.Paths) != 1 || manifest.Paths[0] != src {
+		t.Fatalf("manifest paths = %q, want %q", manifest.Paths, src)
+	}
+
+	content, err := os.ReadFile(extractedPath(root, nested))
+	if err != nil {
+		t.Fatalf("the cached .s3cache.json was not restored: %v", err)
+	}
+	if string(content) != `{"note":"a real cached file"}` {
+		t.Fatalf("restored content = %q", content)
+	}
+}
+
+func TestExtractRequiresTheManifestFirst(t *testing.T) {
+	t.Run("no manifest", func(t *testing.T) {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		body := []byte("plain")
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     "tmp/plain.txt",
+			Mode:     0o644,
+			Size:     int64(len(body)),
+			Typeflag: tar.TypeReg,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, _, err := Extract(&buf, CompressionNone, t.TempDir()); !errors.Is(err, ErrMissingManifest) {
+			t.Fatalf("err = %v, want ErrMissingManifest", err)
+		}
+	})
+
+	t.Run("empty archive", func(t *testing.T) {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, _, err := Extract(&buf, CompressionNone, t.TempDir()); !errors.Is(err, ErrMissingManifest) {
+			t.Fatalf("err = %v, want ErrMissingManifest", err)
+		}
+	})
 }

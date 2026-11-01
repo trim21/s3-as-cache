@@ -7,45 +7,21 @@ import (
 	"github.com/trim21/s3-as-cache/internal/store"
 )
 
-func TestVersionIsStableAcrossPathOrder(t *testing.T) {
-	got := Version([]string{"target", "~/.cargo"}, "zstd", "linux-amd64")
-	want := Version([]string{"~/.cargo", "target", " target "}, "zstd", "linux-amd64")
-	if got != want {
-		t.Fatalf("version depends on path order or duplicates: %s != %s", got, want)
-	}
-	if len(got) != 32 {
-		t.Fatalf("expected a 32 character version, got %q", got)
-	}
-}
-
-func TestVersionSeparatesCompressionAndPlatform(t *testing.T) {
-	base := Version([]string{"target"}, "zstd", "linux-amd64")
-	cases := map[string]string{
-		"other compression": Version([]string{"target"}, "gzip", "linux-amd64"),
-		"other platform":    Version([]string{"target"}, "zstd", "darwin-arm64"),
-		"cross platform":    Version([]string{"target"}, "zstd", ""),
-		"other paths":       Version([]string{"target", "extra"}, "zstd", "linux-amd64"),
-	}
-	for name, other := range cases {
-		if other == base {
-			t.Errorf("%s must produce a different version", name)
-		}
-	}
-}
-
 func TestObjectPrefix(t *testing.T) {
 	tests := []struct {
-		prefix  string
-		version string
-		want    string
+		prefix   string
+		platform string
+		want     string
 	}{
-		{"", "v1", "v1/"},
-		{"cache", "v1", "cache/v1/"},
-		{"/cache/ci/", "v1", "cache/ci/v1/"},
+		{"", "", ""},
+		{"cache", "", "cache/"},
+		{"", "linux-amd64", "linux-amd64/"},
+		{"cache", "linux-amd64", "cache/linux-amd64/"},
+		{"/cache/ci/", "darwin-arm64", "cache/ci/darwin-arm64/"},
 	}
 	for _, tt := range tests {
-		if got := ObjectPrefix(tt.prefix, tt.version); got != tt.want {
-			t.Errorf("ObjectPrefix(%q, %q) = %q, want %q", tt.prefix, tt.version, got, tt.want)
+		if got := ObjectPrefix(tt.prefix, tt.platform); got != tt.want {
+			t.Errorf("ObjectPrefix(%q, %q) = %q, want %q", tt.prefix, tt.platform, got, tt.want)
 		}
 	}
 }

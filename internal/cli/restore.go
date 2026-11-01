@@ -13,38 +13,31 @@ import (
 )
 
 func newRestoreCommand(opts Options) *cobra.Command {
-	var (
-		paths       []string
-		restoreKeys []string
-	)
+	var restoreKeys []string
 
 	cmd := &cobra.Command{
 		Use:     "restore",
 		Short:   "Restore the newest archive matching the key",
 		Long:    restoreDescription,
-		Example: "  s3cache restore --restore-key linux- --path ~/.cargo/registry --path target",
+		Example: "  s3cache restore --restore-key linux-",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRestore(cmd.Context(), opts, paths, restoreKeys)
+			return runRestore(cmd.Context(), opts, restoreKeys)
 		},
 	}
 
-	cmd.Flags().StringArrayVar(&paths, "path", nil, "file, directory or glob pattern to restore (repeatable; supports ** and !pattern)")
 	cmd.Flags().StringArrayVar(&restoreKeys, "restore-key", nil, "fallback key matched by prefix, tried in the given order (repeatable)")
 
 	return cmd
 }
 
-func runRestore(ctx context.Context, opts Options, paths, restoreKeys []string) error {
+func runRestore(ctx context.Context, opts Options, restoreKeys []string) error {
 	conf, err := loadSettings(newConfig())
 	if err != nil {
 		return err
 	}
 
 	log := newLogger(opts.Stderr, conf.quiet, conf.verbose)
-	if len(paths) == 0 {
-		return usagef("--path is required")
-	}
 
 	keys, err := expandKeys(append([]string{conf.key}, restoreKeys...))
 	if err != nil {
@@ -56,7 +49,7 @@ func runRestore(ctx context.Context, opts Options, paths, restoreKeys []string) 
 	}
 	log.debugf("looking up key %q with restore keys %q", primaryKey, fallbackKeys)
 
-	location, err := conf.resolve(paths)
+	location, err := conf.resolve()
 	if err != nil {
 		return err
 	}
@@ -100,13 +93,15 @@ func runRestore(ctx context.Context, opts Options, paths, restoreKeys []string) 
 	if err != nil {
 		return failuref("download %s: %w", match.Key, err)
 	}
-	stats, extractErr := archive.Extract(body, sess.comp, "/")
+	stats, manifest, extractErr := archive.Extract(body, sess.comp, "/")
 	if closeErr := body.Close(); extractErr == nil && closeErr != nil {
 		extractErr = closeErr
 	}
 	if extractErr != nil {
 		return failuref("extract %s: %w", match.Key, extractErr)
 	}
+
+	log.debugf("archive paths: %s", strings.Join(manifest.Paths, ", "))
 
 	log.infof("restored %d file(s), %s from %s", stats.Files, humanBytes(stats.Bytes), match.Key)
 	fmt.Fprintln(opts.Stdout, match.Key)

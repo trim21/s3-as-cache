@@ -4,6 +4,7 @@ package archive
 
 import (
 	"archive/tar"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 )
@@ -20,6 +22,24 @@ import (
 // ErrNoFiles means no path pattern matched anything, so there is nothing worth
 // storing.
 var ErrNoFiles = errors.New("no files matched cache paths")
+
+// manifestName holds the archive's own metadata as the first entry. Restores skip
+// it, so it never lands on the filesystem. The "./" prefix is deliberate: cached
+// entries are absolute paths without their leading slash, so no cached file can
+// ever produce this exact name.
+const manifestName = "./.s3cache.json"
+
+// ErrMissingManifest means the archive does not start with a manifest entry, so
+// it was not written by this tool.
+var ErrMissingManifest = errors.New("archive does not start with a manifest")
+
+// Manifest describes what an archive contains.
+type Manifest struct {
+	Paths       []string  `json:"paths"`
+	Compression string    `json:"compression"`
+	Platform    string    `json:"platform,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
 
 // Stats summarises an archive operation.
 type Stats struct {
@@ -34,10 +54,10 @@ type entry struct {
 	link string
 }
 
-// Create writes a compressed tar stream of patterns to w. Patterns are files,
-// directories or globs, resolved relative to the working directory; a pattern
-// prefixed with "!" excludes matching paths.
-func Create(w io.Writer, patterns []string, compression Compression) (Stats, error) {
+// Create writes a compressed tar stream of patterns to w, prefixed with the
+// archive manifest. Patterns are files, directories or globs, resolved relative
+// to the working directory; a pattern prefixed with "!" excludes matching paths.
+func Create(w io.Writer, patterns []string, compression Compression, manifest Manifest) (Stats, error) {
 	entries, err := collect(patterns)
 	if err != nil {
 		return Stats{}, err
@@ -59,6 +79,12 @@ func Create(w io.Writer, patterns []string, compression Compression) (Stats, err
 		return Stats{}, err
 	}
 	tw := tar.NewWriter(zw)
+
+	// Keep the metadata honest about the stream it is written into.
+	manifest.Compression = string(compression)
+	if err := writeManifest(tw, manifest); err != nil {
+		return Stats{}, err
+	}
 
 	for _, e := range entries {
 		header, err := tar.FileInfoHeader(e.info, e.link)
@@ -99,15 +125,20 @@ func writeFile(w io.Writer, name string) error {
 }
 
 // Extract unpacks a compressed tar stream into root. Entries are stored relative
-// to the filesystem root, so a normal restore uses "/".
-func Extract(r io.Reader, compression Compression, root string) (Stats, error) {
+// to the filesystem root, so a normal restore uses "/". The stream must start
+// with the manifest entry.
+func Extract(r io.Reader, compression Compression, root string) (Stats, Manifest, error) {
 	zr, err := compression.newReader(r)
 	if err != nil {
-		return Stats{}, err
+		return Stats{}, Manifest{}, err
 	}
 	defer zr.Close()
 
-	var stats Stats
+	var (
+		stats     Stats
+		manifest  Manifest
+		seenFirst bool
+	)
 	type dirMode struct {
 		path string
 		mode fs.FileMode
@@ -121,7 +152,18 @@ func Extract(r io.Reader, compression Compression, root string) (Stats, error) {
 			break
 		}
 		if err != nil {
-			return stats, err
+			return stats, manifest, err
+		}
+
+		if !seenFirst {
+			seenFirst = true
+			if header.Name != manifestName {
+				return stats, manifest, fmt.Errorf("%w: first entry is %q", ErrMissingManifest, header.Name)
+			}
+			if err := json.NewDecoder(tr).Decode(&manifest); err != nil {
+				return stats, manifest, fmt.Errorf("read archive manifest: %w", err)
+			}
+			continue
 		}
 
 		// Cleaning against the root drops any ".." segments, so extracted paths
@@ -136,47 +178,72 @@ func Extract(r io.Reader, compression Compression, root string) (Stats, error) {
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, mode|0o700); err != nil {
-				return stats, err
+				return stats, manifest, err
 			}
 			dirs = append(dirs, dirMode{path: target, mode: mode})
 		case tar.TypeReg, tar.TypeRegA:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return stats, err
+				return stats, manifest, err
 			}
 			// Drop whatever is there first: an existing symlink would redirect the
 			// write, and a read-only file would refuse truncation.
 			if err := os.Remove(target); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return stats, err
+				return stats, manifest, err
 			}
 			written, err := extractFile(tr, target, mode)
 			if err != nil {
-				return stats, err
+				return stats, manifest, err
 			}
 			stats.Files++
 			stats.Bytes += written
 			_ = os.Chtimes(target, header.ModTime, header.ModTime)
 		case tar.TypeSymlink:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return stats, err
+				return stats, manifest, err
 			}
 			if err := os.Remove(target); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return stats, err
+				return stats, manifest, err
 			}
 			if err := os.Symlink(header.Linkname, target); err != nil {
-				return stats, err
+				return stats, manifest, err
 			}
 		}
 	}
 
 	// Directories are created writable so their contents can land, then get the
 	// permissions they were archived with.
+	if !seenFirst {
+		return stats, manifest, ErrMissingManifest
+	}
+
 	for i := len(dirs) - 1; i >= 0; i-- {
 		if err := os.Chmod(dirs[i].path, dirs[i].mode); err != nil {
-			return stats, err
+			return stats, manifest, err
 		}
 	}
 
-	return stats, nil
+	return stats, manifest, nil
+}
+
+func writeManifest(tw *tar.Writer, manifest Manifest) error {
+	body, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	body = append(body, '\n')
+
+	header := &tar.Header{
+		Name:     manifestName,
+		Mode:     0o644,
+		Size:     int64(len(body)),
+		ModTime:  manifest.CreatedAt,
+		Typeflag: tar.TypeReg,
+	}
+	if err := tw.WriteHeader(header); err != nil {
+		return err
+	}
+	_, err = tw.Write(body)
+	return err
 }
 
 func extractFile(r io.Reader, target string, mode fs.FileMode) (int64, error) {

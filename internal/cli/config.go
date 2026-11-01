@@ -165,8 +165,17 @@ type resolved struct {
 	prefix string
 }
 
-// resolve works out the storage location and the version this invocation uses.
-func (s settings) resolve(paths []string) (resolved, error) {
+// platform identifies the OS and architecture a cache belongs to. It is empty
+// when S3CACHE_CROSS_PLATFORM is set, which makes caches interchangeable.
+func (s settings) platform() string {
+	if s.crossPlatform {
+		return ""
+	}
+	return runtime.GOOS + "-" + runtime.GOARCH
+}
+
+// resolve works out where this invocation reads and writes.
+func (s settings) resolve() (resolved, error) {
 	cfg, err := store.ParseURL(s.s3URL)
 	if err != nil {
 		return resolved{}, usagef("%s: %w", envVarName(optS3), err)
@@ -178,15 +187,10 @@ func (s settings) resolve(paths []string) (resolved, error) {
 	cfg.SecretKey = s.secretKey
 	cfg.SessionToken = s.sessionToken
 
-	platform := ""
-	if !s.crossPlatform {
-		platform = runtime.GOOS + "-" + runtime.GOARCH
-	}
-
 	return resolved{
 		cfg:    cfg,
 		comp:   s.compression,
-		prefix: cachekey.ObjectPrefix(cfg.Prefix, cachekey.Version(archive.NormalizePatterns(paths), string(s.compression), platform)),
+		prefix: cachekey.ObjectPrefix(cfg.Prefix, s.platform()),
 	}, nil
 }
 

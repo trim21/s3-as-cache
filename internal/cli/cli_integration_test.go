@@ -39,7 +39,7 @@ func TestCLIIntegration(t *testing.T) {
 	if err := os.RemoveAll(deps); err != nil {
 		t.Fatal(err)
 	}
-	if got := h.mustRun("restore", "--path", deps); got != key {
+	if got := h.mustRun("restore"); got != key {
 		t.Fatalf("restore printed %q, want %q", got, key)
 	}
 	if got := readTestFile(t, file); got != `{"version":1}` {

@@ -104,7 +104,7 @@ jobs:
 
           /tmp/s3cache save --path /tmp/smoke
           rm -rf /tmp/smoke
-          /tmp/s3cache restore --path /tmp/smoke
+          /tmp/s3cache restore
           test "$(cat /tmp/smoke/deps/file.txt)" = hello
 
       - name: Silo logs

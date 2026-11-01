@@ -3,49 +3,25 @@
 package cachekey
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/trim21/s3-as-cache/internal/store"
 )
 
-// Version fingerprints the path set, compression and platform an archive was
-// built for. Archives under different versions never match each other, so a
-// changed path list cannot restore stale content.
-func Version(paths []string, compression, platform string) string {
-	normalized := make([]string, 0, len(paths))
-	seen := make(map[string]struct{}, len(paths))
-	for _, raw := range paths {
-		p := strings.TrimSpace(raw)
-		if p == "" {
-			continue
-		}
-		if _, ok := seen[p]; ok {
-			continue
-		}
-		seen[p] = struct{}{}
-		normalized = append(normalized, p)
+// ObjectPrefix is the listing prefix that holds the caches of one platform.
+// An empty platform (cross-platform caches) leaves that segment out.
+func ObjectPrefix(prefix, platform string) string {
+	parts := make([]string, 0, 2)
+	if trimmed := strings.Trim(prefix, "/"); trimmed != "" {
+		parts = append(parts, trimmed)
 	}
-	sort.Strings(normalized)
-
-	h := sha256.New()
-	for _, p := range normalized {
-		fmt.Fprintf(h, "%s\x00", p)
+	if platform != "" {
+		parts = append(parts, platform)
 	}
-	fmt.Fprintf(h, "%s\x00%s", compression, platform)
-
-	return hex.EncodeToString(h.Sum(nil))[:32]
-}
-
-// ObjectPrefix is the listing prefix that holds every archive of one version.
-func ObjectPrefix(prefix, version string) string {
-	if prefix == "" {
-		return version + "/"
+	if len(parts) == 0 {
+		return ""
 	}
-	return strings.Trim(prefix, "/") + "/" + version + "/"
+	return strings.Join(parts, "/") + "/"
 }
 
 // ArchiveKey is the object key suffix for a cache key.

@@ -108,23 +108,28 @@ prints on stdout, so the same template can be passed to a later `restore`.
 Archives are stored as:
 
 ```
-s3://bucket/<prefix>/<version>/<key>.tar.zst
+s3://bucket/<prefix>/<platform>/<key>.tar.zst
 ```
 
-`<version>` is a hash of the normalized path list, the compression method and —
-unless `S3CACHE_CROSS_PLATFORM` is set — `GOOS-GOARCH`. It keeps caches for different
-path sets or platforms from matching each other, so adding or removing a `--path`
-starts a fresh cache instead of restoring a partially wrong one.
+`<platform>` is `GOOS-GOARCH` (omit it with `S3CACHE_CROSS_PLATFORM`) so a cache
+built on one OS or architecture cannot be restored by another. The full format —
+object naming, archive entry names, the embedded manifest, matching rules and
+what is safe to change — is documented in
+[docs/storage-format.md](docs/storage-format.md).
 
-A restore lists the `<version>/` prefix once and picks, in order:
+A restore lists the `<prefix>/<platform>/` prefix once and picks, in order:
 
 1. the object whose key is exactly `S3CACHE_KEY`,
 2. for each `--restore-key` in order, the most recently written object whose key
    starts with that prefix.
 
+Because the archive records absolute paths, `restore` needs no `--path`: it
+unpacks whatever the matched archive contains, and the only flags are the
+fallback key prefixes. A miss restores nothing and exits 0.
+
 `save` writes with a conditional create, so an existing key is kept and the
-upload is skipped (`S3CACHE_OVERWRITE=true` forces a replacement). Nothing matched by
-`--path` means nothing is uploaded, which mirrors "cache nothing" rather than
+upload is skipped (`S3CACHE_OVERWRITE=true` forces a replacement). Nothing matched
+by `--path` means nothing is uploaded, which mirrors "cache nothing" rather than
 storing an empty archive.
 
 Archives are tar streams with entries rooted at the filesystem root, so a restore

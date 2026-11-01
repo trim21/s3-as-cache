@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -54,7 +55,7 @@ func runSave(ctx context.Context, opts Options, paths []string) error {
 	}
 	log.debugf("saving under key %q", cacheKey)
 
-	location, err := conf.resolve(paths)
+	location, err := conf.resolve()
 	if err != nil {
 		return err
 	}
@@ -72,7 +73,12 @@ func runSave(ctx context.Context, opts Options, paths []string) error {
 		os.Remove(tmp.Name())
 	}()
 
-	stats, err := archive.Create(tmp, paths, sess.comp)
+	manifest := archive.Manifest{
+		Paths:     archive.NormalizePatterns(paths),
+		Platform:  conf.platform(),
+		CreatedAt: time.Now().UTC(),
+	}
+	stats, err := archive.Create(tmp, paths, sess.comp, manifest)
 	if errors.Is(err, archive.ErrNoFiles) {
 		log.infof("no files matched --path, skipping cache save")
 		return nil

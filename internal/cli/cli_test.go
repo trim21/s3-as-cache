@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -129,7 +130,7 @@ func TestSaveThenRestore(t *testing.T) {
 	if err := os.RemoveAll(deps); err != nil {
 		t.Fatal(err)
 	}
-	if got := h.mustRun("restore", "--path", deps); got != "deps-1" {
+	if got := h.mustRun("restore"); got != "deps-1" {
 		t.Fatalf("restore printed %q, want the matched key", got)
 	}
 	if got := readTestFile(t, file); got != `{"version":1}` {
@@ -147,7 +148,7 @@ func TestRestoreFallsBackToPrefixKey(t *testing.T) {
 
 	h.t.Setenv(envKey, "linux-new")
 
-	code, stdout := h.run("restore", "--restore-key", "linux-", "--path", deps)
+	code, stdout := h.run("restore", "--restore-key", "linux-")
 	if code != 0 || stdout != "linux-old" {
 		t.Fatalf("restore = (%d, %q), want (0, %q)", code, stdout, "linux-old")
 	}
@@ -159,9 +160,8 @@ func TestRestoreFallsBackToPrefixKey(t *testing.T) {
 func TestRestoreMiss(t *testing.T) {
 	h := newHarness(t)
 	h.env("s3://bucket/ci", "absent")
-	deps := t.TempDir()
 
-	code, stdout := h.run("restore", "--path", deps)
+	code, stdout := h.run("restore")
 	if code != 0 || stdout != "" {
 		t.Fatalf("miss = (%d, %q), want a silent success", code, stdout)
 	}
@@ -185,7 +185,7 @@ func TestSaveKeepsTheFirstEntryUnlessOverwriting(t *testing.T) {
 	if err := os.Remove(file); err != nil {
 		t.Fatal(err)
 	}
-	h.mustRun("restore", "--path", deps)
+	h.mustRun("restore")
 	if got := readTestFile(t, file); got != "first" {
 		t.Fatalf("restored %q, want the first save", got)
 	}
@@ -196,13 +196,13 @@ func TestSaveKeepsTheFirstEntryUnlessOverwriting(t *testing.T) {
 	if err := os.Remove(file); err != nil {
 		t.Fatal(err)
 	}
-	h.mustRun("restore", "--path", deps)
+	h.mustRun("restore")
 	if got := readTestFile(t, file); got != "third" {
 		t.Fatalf("restored %q, want the overwritten save", got)
 	}
 }
 
-func TestVersionSeparatesDifferentPathSets(t *testing.T) {
+func TestCachesAreStoredPerPlatform(t *testing.T) {
 	h := newHarness(t)
 	h.env("s3://bucket/ci", "k1")
 
@@ -210,22 +210,64 @@ func TestVersionSeparatesDifferentPathSets(t *testing.T) {
 	writeTestFile(t, filepath.Join(deps, "a.txt"), "a")
 	h.mustRun("save", "--path", deps)
 
-	if code, stdout := h.run("restore", "--path", filepath.Join(deps, "a.txt")); code != 0 || stdout != "" {
-		t.Fatalf("a different --path must not match: (%d, %q)", code, stdout)
+	objects, err := h.store.List(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	if len(objects) != 1 || objects[0].Key != "ci/"+platform+"/k1.tar.zst" {
+		t.Fatalf("objects = %+v, want ci/%s/k1.tar.zst", objects, platform)
+	}
+
+	// A cross-platform binary must not pick up a platform specific archive.
+	h.t.Setenv(envCrossPlatform, "true")
+	if code, stdout := h.run("restore"); code != 0 || stdout != "" {
+		t.Fatalf("S3CACHE_CROSS_PLATFORM must not match a platform specific cache: (%d, %q)", code, stdout)
 	}
 }
 
-func TestVersionSeparatesPlatformsUnlessCrossPlatform(t *testing.T) {
+func TestCrossPlatformCachesLiveAboveThePlatformDirectory(t *testing.T) {
 	h := newHarness(t)
 	h.env("s3://bucket/ci", "k1")
+	h.t.Setenv(envCrossPlatform, "true")
 
 	deps := t.TempDir()
 	writeTestFile(t, filepath.Join(deps, "a.txt"), "a")
 	h.mustRun("save", "--path", deps)
 
-	h.t.Setenv(envCrossPlatform, "true")
-	if code, stdout := h.run("restore", "--path", deps, "--restore-key", "k"); code != 0 || stdout != "" {
-		t.Fatalf("packing and reading caches with S3CACHE_CROSS_PLATFORM must not match: (%d, %q)", code, stdout)
+	objects, err := h.store.List(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(objects) != 1 || objects[0].Key != "ci/k1.tar.zst" {
+		t.Fatalf("objects = %+v, want ci/k1.tar.zst", objects)
+	}
+}
+
+func TestRestoreNeedsNoPathFlag(t *testing.T) {
+	h := newHarness(t)
+	h.env("s3://bucket/ci", "k1")
+
+	first := t.TempDir()
+	second := t.TempDir()
+	writeTestFile(t, filepath.Join(first, "a.txt"), "a")
+	writeTestFile(t, filepath.Join(second, "b.txt"), "b")
+	h.mustRun("save", "--path", first, "--path", second)
+
+	for _, dir := range []string{first, second} {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := h.mustRun("restore"); got != "k1" {
+		t.Fatalf("restore printed %q, want the matched key", got)
+	}
+	if readTestFile(t, filepath.Join(first, "a.txt")) != "a" {
+		t.Fatal("first saved path was not restored")
+	}
+	if readTestFile(t, filepath.Join(second, "b.txt")) != "b" {
+		t.Fatal("second saved path was not restored")
 	}
 }
 
@@ -302,26 +344,8 @@ func TestCompressionFromEnvironment(t *testing.T) {
 		t.Fatalf("objects = %+v, want one .tar.gz archive", objects)
 	}
 
-	if got := h.mustRun("restore", "--path", deps); got != "k1" {
+	if got := h.mustRun("restore"); got != "k1" {
 		t.Fatalf("restore printed %q", got)
-	}
-}
-
-func TestPathSpellingDoesNotChangeTheCache(t *testing.T) {
-	h := newHarness(t)
-	h.env("s3://bucket/ci", "k1")
-
-	deps := t.TempDir()
-	writeTestFile(t, filepath.Join(deps, "a.txt"), "a")
-	h.mustRun("save", "--path", deps)
-
-	if code, stdout := h.run("restore", "--path", deps+"/"); code != 0 || stdout != "k1" {
-		t.Fatalf("trailing slash = (%d, %q), want (0, %q)", code, stdout, "k1")
-	}
-
-	t.Chdir(filepath.Dir(deps))
-	if code, stdout := h.run("restore", "--path", filepath.Base(deps)); code != 0 || stdout != "k1" {
-		t.Fatalf("relative path = (%d, %q), want (0, %q)", code, stdout, "k1")
 	}
 }
 
@@ -348,7 +372,7 @@ func TestKeyTemplates(t *testing.T) {
 	if err := os.RemoveAll(deps); err != nil {
 		t.Fatal(err)
 	}
-	if matched := h.mustRun("restore", "--path", deps); matched != got {
+	if matched := h.mustRun("restore"); matched != got {
 		t.Fatalf("restore matched %q, want %q", matched, got)
 	}
 	if content := readTestFile(t, filepath.Join(deps, "artifact")); content != "built" {
@@ -356,7 +380,7 @@ func TestKeyTemplates(t *testing.T) {
 	}
 
 	writeTestFile(t, lock, "lock-v2")
-	if code, stdout := h.run("restore", "--path", deps); code != 0 || stdout != "" {
+	if code, stdout := h.run("restore"); code != 0 || stdout != "" {
 		t.Fatalf("a changed lockfile must miss: (%d, %q)", code, stdout)
 	}
 }
@@ -396,7 +420,7 @@ func TestRestoreKeyTemplates(t *testing.T) {
 
 	h.t.Setenv(envKey, "main-linux-new")
 
-	code, stdout := h.run("restore", "--restore-key", `{{ env "CACHE_BRANCH" }}-linux-`, "--path", deps)
+	code, stdout := h.run("restore", "--restore-key", `{{ env "CACHE_BRANCH" }}-linux-`)
 	if code != 0 || stdout != "main-linux-old" {
 		t.Fatalf("restore = (%d, %q), want (0, %q)", code, stdout, "main-linux-old")
 	}
@@ -519,7 +543,7 @@ func TestPathStyleFollowsTheEndpoint(t *testing.T) {
 			t.Setenv(envForcePathStyle, tt.forcePathStyle)
 
 			var captured store.S3Config
-			code := Run(context.Background(), []string{"restore", "--path", t.TempDir()}, Options{
+			code := Run(context.Background(), []string{"restore"}, Options{
 				Stdout: &bytes.Buffer{},
 				Stderr: &bytes.Buffer{},
 				OpenStore: func(cfg store.S3Config) (store.Store, error) {
