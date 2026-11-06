@@ -84,6 +84,24 @@ func (s *S3) List(ctx context.Context, prefix string) ([]Object, error) {
 	return objects, nil
 }
 
+func (s *S3) Head(ctx context.Context, key string) (Object, error) {
+	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isNotFound(err) {
+			return Object{}, ErrNotFound
+		}
+		return Object{}, err
+	}
+	return Object{
+		Key:          key,
+		Size:         aws.ToInt64(out.ContentLength),
+		LastModified: aws.ToTime(out.LastModified),
+	}, nil
+}
+
 func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -103,12 +121,10 @@ func (s *S3) Put(ctx context.Context, key string, body io.Reader, size int64, if
 	if ifAbsent {
 		// Not every S3-compatible backend enforces If-None-Match, so probe first
 		// and keep the conditional header as the atomic backstop.
-		if _, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
-			Bucket: aws.String(s.bucket),
-			Key:    aws.String(key),
-		}); err == nil {
+		switch _, err := s.Head(ctx, key); {
+		case err == nil:
 			return ErrAlreadyExists
-		} else if !isNotFound(err) {
+		case !errors.Is(err, ErrNotFound):
 			return err
 		}
 	}

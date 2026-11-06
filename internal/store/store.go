@@ -27,6 +27,8 @@ type Object struct {
 type Store interface {
 	// List returns every object whose key starts with prefix.
 	List(ctx context.Context, prefix string) ([]Object, error)
+	// Head reports the object stored under key, and ErrNotFound when there is none.
+	Head(ctx context.Context, key string) (Object, error)
 	// Get returns the body of key.
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
 	// Put stores size bytes from body under key. When ifAbsent is set the write

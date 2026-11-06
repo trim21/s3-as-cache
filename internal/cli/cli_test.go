@@ -202,6 +202,25 @@ func TestSaveKeepsTheFirstEntryUnlessOverwriting(t *testing.T) {
 	}
 }
 
+// The probe must run before the archive work, otherwise a repeated save pays for
+// a whole tar and compression it will never upload.
+func TestSaveFindsTheExistingEntryBeforeArchiving(t *testing.T) {
+	h := newHarness(t)
+	h.env("s3://bucket/ci", "k1")
+
+	deps := t.TempDir()
+	writeTestFile(t, filepath.Join(deps, "a.txt"), "a")
+	h.mustRun("save", "--path", deps)
+
+	// Nothing matches this path: reaching the archive stage would report a skip.
+	if got := h.mustRun("save", "--path", filepath.Join(deps, "absent")); got != "" {
+		t.Fatalf("save printed %q, want nothing", got)
+	}
+	if !strings.Contains(h.stderr.String(), "already exists") {
+		t.Fatalf("expected the existing entry to be found before archiving, got:\n%s", h.stderr.String())
+	}
+}
+
 func TestCachesAreStoredPerPlatform(t *testing.T) {
 	h := newHarness(t)
 	h.env("s3://bucket/ci", "k1")
