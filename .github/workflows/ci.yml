@@ -45,6 +45,12 @@ jobs:
       - name: Unit tests
         run: go test ./... -race -count=1
 
+  test-checks: # referenced in Mergify conditions, must stay unique across all workflows
+    needs: [test]
+    runs-on: ubuntu-slim
+    steps:
+      - run: echo "all test checks passed"
+
   integration:
     name: integration (Silo)
     runs-on: ubuntu-latest
@@ -139,3 +145,9 @@ jobs:
           cache: true
 
       - run: go build -trimpath -o /dev/null ./cmd/s3cache
+
+  build-checks: # referenced in Mergify conditions, must stay unique across all workflows
+    needs: [build]
+    runs-on: ubuntu-slim
+    steps:
+      - run: echo "all build checks passed"
