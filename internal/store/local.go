@@ -55,6 +55,17 @@ func (l *Local) List(_ context.Context, prefix string) ([]Object, error) {
 	return objects, nil
 }
 
+func (l *Local) Head(_ context.Context, key string) (Object, error) {
+	info, err := os.Stat(l.path(key))
+	if errors.Is(err, fs.ErrNotExist) {
+		return Object{}, ErrNotFound
+	}
+	if err != nil {
+		return Object{}, err
+	}
+	return Object{Key: key, Size: info.Size(), LastModified: info.ModTime()}, nil
+}
+
 func (l *Local) Get(_ context.Context, key string) (io.ReadCloser, error) {
 	f, err := os.Open(l.path(key))
 	if errors.Is(err, fs.ErrNotExist) {

@@ -84,6 +84,18 @@ func TestS3StoreIntegration(t *testing.T) {
 		t.Fatal("list must report a modification time")
 	}
 
+	head, err := st.Head(ctx, key)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if head.Size != int64(len("second")) {
+		t.Fatalf("head size = %d, want %d", head.Size, len("second"))
+	}
+
+	if _, err := st.Head(ctx, prefix+"absent.tar.zst"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("head missing object = %v, want ErrNotFound", err)
+	}
+
 	body, err := st.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("get: %v", err)

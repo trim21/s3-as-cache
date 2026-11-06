@@ -64,6 +64,19 @@ func runSave(ctx context.Context, opts Options, paths []string) error {
 		return err
 	}
 
+	objectKey := sess.prefix + cachekey.ArchiveKey(cacheKey, sess.comp.Extension())
+	if !conf.overwrite {
+		// Probing before archiving keeps a repeated save from tarring everything
+		// for nothing; Put's conditional write stays the atomic backstop.
+		switch _, err := sess.store.Head(ctx, objectKey); {
+		case err == nil:
+			log.infof("cache entry %q already exists, not overwriting", cacheKey)
+			return nil
+		case !errors.Is(err, store.ErrNotFound):
+			return failuref("check cache entry %s: %w", cacheKey, err)
+		}
+	}
+
 	tmp, err := os.CreateTemp("", "s3cache-*")
 	if err != nil {
 		return failuref("create temporary archive: %w", err)
@@ -95,7 +108,6 @@ func runSave(ctx context.Context, opts Options, paths []string) error {
 		return failuref("rewind temporary archive: %w", err)
 	}
 
-	objectKey := sess.prefix + cachekey.ArchiveKey(cacheKey, sess.comp.Extension())
 	err = sess.store.Put(ctx, objectKey, tmp, size, !conf.overwrite)
 	if errors.Is(err, store.ErrAlreadyExists) {
 		log.infof("cache entry %q already exists, not overwriting", cacheKey)
